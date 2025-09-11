@@ -1,0 +1,212 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+import {ERC721, ERC721Enumerable, IERC721} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import {IERC20, SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {IEntropyConsumer} from "@pythnetwork/entropy-sdk-solidity/IEntropyConsumer.sol";
+import {IEntropyV2} from "@pythnetwork/entropy-sdk-solidity/IEntropyV2.sol";
+
+contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard, Ownable {
+    using SafeERC20 for IERC20;
+
+    uint256 public constant DIVISOR = 100;
+    uint256 public constant FEE = 5;
+    uint256 public constant SPLIT = 50;
+
+    address public immutable factory;
+    address public immutable entropy;
+    address public immutable quote;
+    address public immutable prizeToken;
+    uint256 public immutable prizeId;
+    uint256 public immutable ticketPrice;
+    uint256 public immutable minimumTickets;
+    uint256 public immutable endTimestamp;
+
+    bool public drawn;
+    uint256 public draw;
+
+    uint256 public nextTicketId;
+
+    error Raffle__ZeroTo();
+    error Raffle__ZeroAmount();
+    error Raffle__Drawn();
+    error Raffle__InProgress();
+
+    event Raffle__TicketPurchased(address indexed from, address indexed to, uint256 indexed ticketId);
+    event Raffle__ProviderFeePaid(address indexed provider, uint256 amount);
+    event Raffle__TreasuryFeePaid(address indexed treasury, uint256 amount);
+    event Raffle__Draw(uint256 indexed draw);
+    event Raffle__PrizesDistributedMinimumMet(address indexed owner, address indexed winner, uint256 amount);
+    event Raffle__PrizesDistributedMinimumNotMet(address indexed owner, address indexed winner, uint256 winnerShare, uint256 ownerShare);
+
+    constructor(
+        string memory name,
+        string memory symbol,
+        address _quote,
+        address _entropy,
+        address _prizeToken,
+        uint256 _prizeId,
+        uint256 _duration,
+        uint256 _ticketPrice,
+        uint256 _minimumTickets
+    ) ERC721(name, symbol) {
+        entropy = _entropy;
+        quote = _quote;
+        prizeToken = _prizeToken;
+        prizeId = _prizeId;
+        endTimestamp = block.timestamp + _duration;
+        ticketPrice = _ticketPrice;
+        minimumTickets = _minimumTickets;
+        factory = msg.sender;
+        IERC721(prizeToken).safeTransferFrom(msg.sender, address(this), prizeId);
+    }
+
+    function buyTickets(address to, address provider, uint256 amount) external nonReentrant {
+        if (to == address(0)) revert Raffle__ZeroTo();
+        if (amount == 0) revert Raffle__ZeroAmount();
+        if (drawn) revert Raffle__Drawn();
+
+        for (uint256 i = 0; i < amount; i++) {
+            nextTicketId++;
+            _safeMint(to, nextTicketId);
+            emit Raffle__TicketPurchased(msg.sender, to, nextTicketId);
+        }
+
+        uint256 totalCost = amount * ticketPrice;
+        uint256 fee = totalCost * FEE / DIVISOR;
+
+        if (provider != address(0)) {
+            IERC20(quote).safeTransferFrom(msg.sender, provider, fee);
+            emit Raffle__ProviderFeePaid(provider, fee);
+            totalCost -= fee;
+        }
+        
+        address treasury = RaffleFactory(factory).treasury();
+        if (treasury != address(0)) {
+            IERC20(quote).safeTransferFrom(msg.sender, treasury, fee);
+            emit Raffle__TreasuryFeePaid(treasury, fee);
+            totalCost -= fee;
+        }
+
+        IERC20(quote).safeTransferFrom(msg.sender, address(this), totalCost);
+    }
+
+    function drawRaffle() external payable nonReentrant {
+        if (drawn) revert Raffle__Drawn();
+        if (block.timestamp < endTimestamp) revert Raffle__InProgress();
+
+        if (entropy != address(0)) {
+            uint256 entropyFee = IEntropyV2(entropy).getFeeV2();
+            IEntropyV2(entropy).requestV2{value: entropyFee}();
+        } else {
+            uint256 randomNumber = uint256(keccak256(abi.encodePacked(block.timestamp, block.prevrandao, msg.sender)));
+            mockCallback(randomNumber);
+        }
+    }
+
+    function distributePrizes() external { 
+        if (!drawn) revert Raffle__InProgress();
+
+        uint256 balance = IERC20(quote).balanceOf(address(this));
+        address owner = owner();
+        address winner = ownerOf(draw);
+        if (nextTicketId < minimumTickets) {
+            IERC20(quote).transfer(owner, balance);
+            IERC721(prizeToken).transferFrom(address(this), winner, prizeId);
+            emit Raffle__PrizesDistributedMinimumMet(owner, winner, balance);
+        } else {
+            uint256 winnerShare = balance * SPLIT / DIVISOR;
+            uint256 ownerShare = balance - winnerShare;
+            IERC20(quote).transfer(winner, winnerShare);
+            IERC20(quote).transfer(owner, ownerShare);
+            IERC721(prizeToken).transferFrom(address(this), owner, prizeId);
+            emit Raffle__PrizesDistributedMinimumNotMet(owner, winner, winnerShare, ownerShare);
+        }
+    }
+      
+    function entropyCallback(uint64, address, bytes32 randomNumber) internal override {
+        draw = (uint256(randomNumber) % (nextTicketId - 1)) + 1;
+        drawn = true;
+        emit Raffle__Draw(draw);
+    }
+
+    function mockCallback(uint256 randomNumber) internal {
+        draw = (randomNumber % (nextTicketId - 1)) + 1;
+        drawn = true;
+        emit Raffle__Draw(draw);
+    }
+
+    function _beforeTokenTransfer(address from, address to, uint256 firstTokenId, uint256 batchSize)
+        internal
+        override(ERC721, ERC721Enumerable)
+    {
+        super._beforeTokenTransfer(from, to, firstTokenId, batchSize);
+    }
+
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(ERC721, ERC721Enumerable)
+        returns (bool)
+    {
+        return super.supportsInterface(interfaceId);
+    }
+
+    function _burn(uint256 tokenId) internal override(ERC721) {
+        super._burn(tokenId);
+    }
+
+    function getEntropy() internal view override returns (address) {
+        return entropy;
+    }
+}
+
+contract RaffleFactory is Ownable {
+
+    address public immutable quote;
+    address public immutable entropy;
+
+    uint256 public immutable duration;
+    uint256 public immutable ticketPrice;
+
+    address public treasury;
+
+    uint256 public index;
+    mapping(uint256 => address) public index_Raffle;
+    mapping(address => uint256) public raffle_Index;
+
+    event RaffleFactory__Created(address indexed raffle);
+    event RaffleFactory__TreasurySet(address indexed treasury);
+
+    constructor(address _quote, address _entropy, uint256 _duration, uint256 _ticketPrice) {
+        quote = _quote;
+        entropy = _entropy;
+        duration = _duration;
+        ticketPrice = _ticketPrice;
+        treasury = msg.sender;
+    }
+
+    function create(
+        address owner,
+        string memory name,
+        string memory symbol,
+        address prizeToken,
+        uint256 prizeId,
+        uint256 minimumTickets
+    ) external returns (address) {
+        Raffle raffle = new Raffle(name, symbol, quote, entropy, prizeToken, prizeId, duration, ticketPrice, minimumTickets);
+        index++;
+        index_Raffle[index] = address(raffle);
+        raffle_Index[address(raffle)] = index;
+        raffle.transferOwnership(owner);
+        emit RaffleFactory__Created(address(raffle));
+        return (address(raffle));
+    }
+
+    function setTreasury(address _treasury) external onlyOwner {
+        treasury = _treasury;
+        emit RaffleFactory__TreasurySet(treasury);
+    }
+}
