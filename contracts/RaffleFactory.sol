@@ -25,7 +25,7 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard, 
     uint256 public immutable endTimestamp;
 
     bool public drawn;
-    uint256 public draw;
+    uint256 public winnerTicketId;
 
     uint256 public nextTicketId;
 
@@ -34,12 +34,12 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard, 
     error Raffle__Drawn();
     error Raffle__InProgress();
 
-    event Raffle__TicketPurchased(address indexed from, address indexed to, uint256 indexed ticketId);
+    event Raffle__Buy(address indexed from, address indexed to, uint256 indexed ticketId);
     event Raffle__ProviderFeePaid(address indexed provider, uint256 amount);
     event Raffle__TreasuryFeePaid(address indexed treasury, uint256 amount);
-    event Raffle__Draw(uint256 indexed draw);
-    event Raffle__PrizesDistributedMinimumMet(address indexed owner, address indexed winner, uint256 amount);
-    event Raffle__PrizesDistributedMinimumNotMet(address indexed owner, address indexed winner, uint256 winnerShare, uint256 ownerShare);
+    event Raffle__Draw(uint256 indexed winningTicketId);
+    event Raffle__SettlementMinimumMet(address indexed owner, address indexed winner, uint256 amount);
+    event Raffle__SettlementMinimumNotMet(address indexed owner, address indexed winner, uint256 winnerShare, uint256 ownerShare);
 
     constructor(
         string memory name,
@@ -63,7 +63,7 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard, 
         IERC721(prizeToken).safeTransferFrom(msg.sender, address(this), prizeId);
     }
 
-    function buyTickets(address to, address provider, uint256 amount) external nonReentrant {
+    function buy(address to, address provider, uint256 amount) external nonReentrant {
         if (to == address(0)) revert Raffle__ZeroTo();
         if (amount == 0) revert Raffle__ZeroAmount();
         if (drawn) revert Raffle__Drawn();
@@ -71,7 +71,7 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard, 
         for (uint256 i = 0; i < amount; i++) {
             nextTicketId++;
             _safeMint(to, nextTicketId);
-            emit Raffle__TicketPurchased(msg.sender, to, nextTicketId);
+            emit Raffle__Buy(msg.sender, to, nextTicketId);
         }
 
         uint256 totalCost = amount * ticketPrice;
@@ -93,7 +93,7 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard, 
         IERC20(quote).safeTransferFrom(msg.sender, address(this), totalCost);
     }
 
-    function drawRaffle() external payable nonReentrant {
+    function draw() external payable nonReentrant {
         if (drawn) revert Raffle__Drawn();
         if (block.timestamp < endTimestamp) revert Raffle__InProgress();
 
@@ -106,36 +106,36 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard, 
         }
     }
 
-    function distributePrizes() external { 
+    function settle() external { 
         if (!drawn) revert Raffle__InProgress();
 
         uint256 balance = IERC20(quote).balanceOf(address(this));
         address owner = owner();
-        address winner = ownerOf(draw);
+        address winner = ownerOf(winnerTicketId);
         if (nextTicketId < minimumTickets) {
             IERC20(quote).transfer(owner, balance);
             IERC721(prizeToken).transferFrom(address(this), winner, prizeId);
-            emit Raffle__PrizesDistributedMinimumMet(owner, winner, balance);
+            emit Raffle__SettlementMinimumMet(owner, winner, balance);
         } else {
             uint256 winnerShare = balance * SPLIT / DIVISOR;
             uint256 ownerShare = balance - winnerShare;
             IERC20(quote).transfer(winner, winnerShare);
             IERC20(quote).transfer(owner, ownerShare);
             IERC721(prizeToken).transferFrom(address(this), owner, prizeId);
-            emit Raffle__PrizesDistributedMinimumNotMet(owner, winner, winnerShare, ownerShare);
+            emit Raffle__SettlementMinimumNotMet(owner, winner, winnerShare, ownerShare);
         }
     }
       
     function entropyCallback(uint64, address, bytes32 randomNumber) internal override {
-        draw = (uint256(randomNumber) % (nextTicketId - 1)) + 1;
+        winnerTicketId = (uint256(randomNumber) % (nextTicketId - 1)) + 1;
         drawn = true;
-        emit Raffle__Draw(draw);
+        emit Raffle__Draw(winnerTicketId);
     }
 
     function mockCallback(uint256 randomNumber) internal {
-        draw = (randomNumber % (nextTicketId - 1)) + 1;
+        winnerTicketId = (randomNumber % (nextTicketId - 1)) + 1;
         drawn = true;
-        emit Raffle__Draw(draw);
+        emit Raffle__Draw(winnerTicketId);
     }
 
     function _beforeTokenTransfer(address from, address to, uint256 firstTokenId, uint256 batchSize)
