@@ -8,14 +8,15 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IEntropyConsumer} from "@pythnetwork/entropy-sdk-solidity/IEntropyConsumer.sol";
 import {IEntropyV2} from "@pythnetwork/entropy-sdk-solidity/IEntropyV2.sol";
 
-contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard, Ownable {
+contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     uint256 public constant DIVISOR = 100;
     uint256 public constant FEE = 5;
     uint256 public constant SPLIT = 50;
 
-    address public immutable factory;
+    address public immutable sponsor;
+    address public immutable treasury;
     address public immutable entropy;
     address public immutable quote;
     address public immutable prizeToken;
@@ -24,10 +25,8 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard, 
     uint256 public immutable minimumTickets;
     uint256 public immutable endTimestamp;
 
-    bool public drawn;
-    uint256 public winnerTicketId;
-
     uint256 public nextTicketId;
+    uint256 public winnerTicketId;
 
     error Raffle__ZeroTo();
     error Raffle__ZeroAmount();
@@ -44,6 +43,8 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard, 
     constructor(
         string memory name,
         string memory symbol,
+        address _sponsor,
+        address _treasury,
         address _quote,
         address _entropy,
         address _prizeToken,
@@ -52,6 +53,8 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard, 
         uint256 _ticketPrice,
         uint256 _minimumTickets
     ) ERC721(name, symbol) {
+        sponsor = _sponsor;
+        treasury = _treasury;
         entropy = _entropy;
         quote = _quote;
         prizeToken = _prizeToken;
@@ -59,14 +62,13 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard, 
         endTimestamp = block.timestamp + _duration;
         ticketPrice = _ticketPrice;
         minimumTickets = _minimumTickets;
-        factory = msg.sender;
         IERC721(prizeToken).safeTransferFrom(msg.sender, address(this), prizeId);
     }
 
     function buy(address to, address provider, uint256 amount) external nonReentrant {
         if (to == address(0)) revert Raffle__ZeroTo();
         if (amount == 0) revert Raffle__ZeroAmount();
-        if (drawn) revert Raffle__Drawn();
+        if (winnerTicketId != 0) revert Raffle__Drawn();
 
         for (uint256 i = 0; i < amount; i++) {
             nextTicketId++;
@@ -83,7 +85,6 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard, 
             totalCost -= fee;
         }
         
-        address treasury = RaffleFactory(factory).treasury();
         if (treasury != address(0)) {
             IERC20(quote).safeTransferFrom(msg.sender, treasury, fee);
             emit Raffle__TreasuryFeePaid(treasury, fee);
@@ -94,7 +95,7 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard, 
     }
 
     function draw() external payable nonReentrant {
-        if (drawn) revert Raffle__Drawn();
+        if (winnerTicketId != 0) revert Raffle__Drawn();
         if (block.timestamp < endTimestamp) revert Raffle__InProgress();
 
         if (entropy != address(0)) {
@@ -107,34 +108,31 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard, 
     }
 
     function settle() external { 
-        if (!drawn) revert Raffle__InProgress();
+        if (winnerTicketId == 0) revert Raffle__InProgress();
 
         uint256 balance = IERC20(quote).balanceOf(address(this));
-        address owner = owner();
         address winner = ownerOf(winnerTicketId);
         if (nextTicketId < minimumTickets) {
-            IERC20(quote).transfer(owner, balance);
+            IERC20(quote).transfer(sponsor, balance);
             IERC721(prizeToken).transferFrom(address(this), winner, prizeId);
-            emit Raffle__SettlementMinimumMet(owner, winner, balance);
+            emit Raffle__SettlementMinimumMet(sponsor, winner, balance);
         } else {
             uint256 winnerShare = balance * SPLIT / DIVISOR;
             uint256 ownerShare = balance - winnerShare;
             IERC20(quote).transfer(winner, winnerShare);
-            IERC20(quote).transfer(owner, ownerShare);
-            IERC721(prizeToken).transferFrom(address(this), owner, prizeId);
-            emit Raffle__SettlementMinimumNotMet(owner, winner, winnerShare, ownerShare);
+            IERC20(quote).transfer(sponsor, ownerShare);
+            IERC721(prizeToken).transferFrom(address(this), sponsor, prizeId);
+            emit Raffle__SettlementMinimumNotMet(sponsor, winner, winnerShare, ownerShare);
         }
     }
       
     function entropyCallback(uint64, address, bytes32 randomNumber) internal override {
         winnerTicketId = (uint256(randomNumber) % (nextTicketId - 1)) + 1;
-        drawn = true;
         emit Raffle__Draw(winnerTicketId);
     }
 
     function mockCallback(uint256 randomNumber) internal {
         winnerTicketId = (randomNumber % (nextTicketId - 1)) + 1;
-        drawn = true;
         emit Raffle__Draw(winnerTicketId);
     }
 
@@ -185,22 +183,20 @@ contract RaffleFactory is Ownable {
         entropy = _entropy;
         duration = _duration;
         ticketPrice = _ticketPrice;
-        treasury = msg.sender;
     }
 
     function create(
-        address owner,
+        address sponsor,
         string memory name,
         string memory symbol,
         address prizeToken,
         uint256 prizeId,
         uint256 minimumTickets
     ) external returns (address) {
-        Raffle raffle = new Raffle(name, symbol, quote, entropy, prizeToken, prizeId, duration, ticketPrice, minimumTickets);
+        Raffle raffle = new Raffle(name, symbol, sponsor, treasury, quote, entropy, prizeToken, prizeId, duration, ticketPrice, minimumTickets);
         index++;
         index_Raffle[index] = address(raffle);
         raffle_Index[address(raffle)] = index;
-        raffle.transferOwnership(owner);
         emit RaffleFactory__Created(address(raffle));
         return (address(raffle));
     }
