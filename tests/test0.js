@@ -71,9 +71,35 @@ describe("local: test0", function () {
 
   it("User0 creates a raffle", async function () {
     console.log("******************************************************");
-    await nft.connect(user0).approve(raffleFactory.address, 1);
-    await raffleFactory
+    await nft.connect(user0).approve(multicall.address, 1);
+    await multicall
       .connect(user0)
       .create("Raffle1", "RAFFLE1", user0.address, nft.address, 1, 100);
+  });
+
+  it("Raffle1 data", async function () {
+    console.log("******************************************************");
+    let data = await multicall.getRaffle(
+      await multicall.getIndexRaffle(1),
+      user1.address
+    );
+    console.log(data);
+  });
+
+  it("User1 buy a ticket for raffle1", async function () {
+    console.log("******************************************************");
+    await usdc.connect(user1).approve(multicall.address, one);
+    await multicall
+      .connect(user1)
+      .buy(await multicall.getIndexRaffle(1), AddressZero, 1);
+  });
+
+  it("Raffle1 data", async function () {
+    console.log("******************************************************");
+    let data = await multicall.getRaffle(
+      await multicall.getIndexRaffle(1),
+      user1.address
+    );
+    console.log(data);
   });
 });

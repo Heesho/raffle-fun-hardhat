@@ -156,13 +156,8 @@ contract Raffle is ERC721, ERC721Enumerable, IERC721Receiver, IEntropyConsumer, 
         super._burn(tokenId);
     }
 
-    function onERC721Received(
-        address operator,
-        address from,
-        uint256 tokenId,
-        bytes calldata data
-    ) external pure override returns (bytes4) {
-            return IERC721Receiver.onERC721Received.selector;
+    function onERC721Received(address, address, uint256, bytes calldata) external pure override returns (bytes4) {
+        return IERC721Receiver.onERC721Received.selector;
     }
 
     function getEntropy() internal view override returns (address) {
@@ -170,6 +165,7 @@ contract Raffle is ERC721, ERC721Enumerable, IERC721Receiver, IEntropyConsumer, 
     }
 
     function getEntropyFee() external view returns (uint256) {
+        if (entropy == address(0)) return 0;
         return IEntropyV2(entropy).getFeeV2();
     }
 }
@@ -214,28 +210,6 @@ contract RaffleFactory is Ownable {
         raffle_Index[address(raffle)] = index;
         emit RaffleFactory__Created(address(raffle));
         return (address(raffle));
-    }
-
-    function buy(address raffle, address provider, uint256 amount) external {
-        uint256 totalCost = amount * ticketPrice;
-
-        IERC20(quote).transferFrom(msg.sender, address(this), totalCost);
-        IERC20(quote).approve(raffle, totalCost);
-        Raffle(raffle).buy(msg.sender, provider, amount);
-    }
-        
-    function draw(address raffle) external payable {
-        if (entropy != address(0)) {
-            uint256 entropyFee = Raffle(raffle).getEntropyFee();
-            require(msg.value >= entropyFee, "Insufficient ETH for entropy fee");
-            Raffle(raffle).draw{value: entropyFee}();
-        } else {
-            Raffle(raffle).draw{value: 0}();
-        }
-    }
-
-    function settle(address raffle) external {
-        Raffle(raffle).settle();
     }
 
     function setTreasury(address _treasury) external onlyOwner {
