@@ -40,7 +40,7 @@ describe("local: test0", function () {
     console.log("- RaffleFactory Initialized");
 
     const multicallArtifact = await ethers.getContractFactory("Multicall");
-    multicall = await multicallArtifact.deploy();
+    multicall = await multicallArtifact.deploy(raffleFactory.address);
     console.log("- Multicall Initialized");
 
     console.log("- System set up");
@@ -61,7 +61,19 @@ describe("local: test0", function () {
 
   it("Mint NFT to user0", async function () {
     console.log("******************************************************");
-    await nft.connect(owner).mint(user0.address, "https://example.com/0");
+    await nft.connect(owner).mint(user0.address, "https://example.com/1");
     console.log("NFT minted to user0");
+    console.log(
+      "NFT tokenId: ",
+      await nft.tokenOfOwnerByIndex(user0.address, 0)
+    );
+  });
+
+  it("User0 creates a raffle", async function () {
+    console.log("******************************************************");
+    await nft.connect(user0).approve(raffleFactory.address, 1);
+    await raffleFactory
+      .connect(user0)
+      .create("Raffle1", "RAFFLE1", user0.address, nft.address, 1, 100);
   });
 });

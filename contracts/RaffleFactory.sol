@@ -2,13 +2,14 @@
 pragma solidity 0.8.19;
 
 import {ERC721, ERC721Enumerable, IERC721} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import {IERC20, SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IEntropyConsumer} from "@pythnetwork/entropy-sdk-solidity/IEntropyConsumer.sol";
 import {IEntropyV2} from "@pythnetwork/entropy-sdk-solidity/IEntropyV2.sol";
 
-contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard {
+contract Raffle is ERC721, ERC721Enumerable, IERC721Receiver, IEntropyConsumer, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     uint256 public constant DIVISOR = 100;
@@ -62,7 +63,6 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard {
         endTimestamp = block.timestamp + _duration;
         ticketPrice = _ticketPrice;
         minimumTickets = _minimumTickets;
-        IERC721(prizeToken).safeTransferFrom(msg.sender, address(this), prizeId);
     }
 
     function buy(address to, address provider, uint256 amount) external nonReentrant {
@@ -107,7 +107,7 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard {
         }
     }
 
-    function settle() external { 
+    function settle() external nonReentrant {
         if (winnerTicketId == 0) revert Raffle__InProgress();
 
         uint256 balance = IERC20(quote).balanceOf(address(this));
@@ -156,8 +156,21 @@ contract Raffle is ERC721, ERC721Enumerable, IEntropyConsumer, ReentrancyGuard {
         super._burn(tokenId);
     }
 
+    function onERC721Received(
+        address operator,
+        address from,
+        uint256 tokenId,
+        bytes calldata data
+    ) external pure override returns (bytes4) {
+            return IERC721Receiver.onERC721Received.selector;
+    }
+
     function getEntropy() internal view override returns (address) {
         return entropy;
+    }
+
+    function getEntropyFee() external view returns (uint256) {
+        return IEntropyV2(entropy).getFeeV2();
     }
 }
 
@@ -186,14 +199,16 @@ contract RaffleFactory is Ownable {
     }
 
     function create(
-        address sponsor,
         string memory name,
         string memory symbol,
+        address sponsor,
         address prizeToken,
         uint256 prizeId,
         uint256 minimumTickets
     ) external returns (address) {
         Raffle raffle = new Raffle(name, symbol, sponsor, treasury, quote, entropy, prizeToken, prizeId, duration, ticketPrice, minimumTickets);
+        IERC721(prizeToken).safeTransferFrom(msg.sender, address(raffle), prizeId);
+
         index++;
         index_Raffle[index] = address(raffle);
         raffle_Index[address(raffle)] = index;
@@ -201,8 +216,31 @@ contract RaffleFactory is Ownable {
         return (address(raffle));
     }
 
+    function buy(address raffle, address provider, uint256 amount) external {
+        uint256 totalCost = amount * ticketPrice;
+
+        IERC20(quote).transferFrom(msg.sender, address(this), totalCost);
+        IERC20(quote).approve(raffle, totalCost);
+        Raffle(raffle).buy(msg.sender, provider, amount);
+    }
+        
+    function draw(address raffle) external payable {
+        if (entropy != address(0)) {
+            uint256 entropyFee = Raffle(raffle).getEntropyFee();
+            require(msg.value >= entropyFee, "Insufficient ETH for entropy fee");
+            Raffle(raffle).draw{value: entropyFee}();
+        } else {
+            Raffle(raffle).draw{value: 0}();
+        }
+    }
+
+    function settle(address raffle) external {
+        Raffle(raffle).settle();
+    }
+
     function setTreasury(address _treasury) external onlyOwner {
         treasury = _treasury;
         emit RaffleFactory__TreasurySet(treasury);
     }
+
 }
